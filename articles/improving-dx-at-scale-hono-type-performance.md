@@ -4,6 +4,7 @@ emoji: "⚡"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["hono", "typescript", "drizzle", "testing", "dx"]
 published: false
+publication_name: "rit"
 ---
 
 # はじめに

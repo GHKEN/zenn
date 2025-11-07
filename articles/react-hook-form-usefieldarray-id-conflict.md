@@ -4,6 +4,7 @@ emoji: "🔄"
 type: "tech"
 topics: ["react", "typescript", "reacthookform"]
 published: true
+publication_name: "rit"
 ---
 
 こんにちは、RITの福田（[@gendaihyousyou](https://x.com/gendaihyousyou)）です
