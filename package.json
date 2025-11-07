@@ -1,0 +1,25 @@
+{
+	"name": "blog",
+	"module": "index.ts",
+	"type": "module",
+	"private": true,
+	"workspaces": [
+		"examples/*"
+	],
+	"scripts": {
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.4",
+		"@types/bun": "latest"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"zenn-cli": "^0.2.10",
+		"zod": "4.1.12"
+	}
+}

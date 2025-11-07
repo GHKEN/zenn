@@ -1,0 +1,26 @@
+{
+	"name": "test-performance-benchmark",
+	"version": "1.0.0",
+	"type": "module",
+	"scripts": {
+		"docker:up": "docker-compose up -d",
+		"docker:down": "docker-compose down -v",
+		"generate:schema": "bun run scripts/generate-schema.ts",
+		"db:push": "drizzle-kit push",
+		"test:bun-truncate": "bun test tests/bun-truncate.test.ts",
+		"test:bun-transaction": "bun test tests/bun-transaction.test.ts",
+		"test:vitest-truncate": "vitest run tests/vitest-truncate.test.ts",
+		"test:vitest-transaction": "vitest run tests/vitest-transaction.test.ts",
+		"measure:all": "bun run scripts/measure-all.ts"
+	},
+	"dependencies": {
+		"drizzle-orm": "^0.36.4",
+		"mysql2": "^3.11.5"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"bun-types": "latest",
+		"drizzle-kit": "^0.28.1",
+		"vitest": "^2.1.8"
+	}
+}

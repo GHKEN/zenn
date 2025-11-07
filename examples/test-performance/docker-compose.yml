@@ -1,0 +1,24 @@
+services:
+  mysql-test:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: test
+    ports:
+      - "3307:3306"
+    command: --default-authentication-plugin=mysql_native_password
+
+  mysql-test-tmpfs:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: test
+    ports:
+      - "3308:3306"
+    command: --default-authentication-plugin=mysql_native_password
+    tmpfs:
+      - /var/lib/mysql
