@@ -1,16 +1,14 @@
 ---
 title: "react-hook-formのuseFieldArrayでidが上書きされる問題"
-emoji: "😽"
+emoji: "🔄"
 type: "tech"
 topics: ["react", "typescript", "reacthookform"]
 published: false
 ---
 
-## 概要
+こんにちは、RITの福田（[@gendaihyousyou](https://x.com/gendaihyousyou)）です
 
-react-hook-formの`useFieldArray`を使用する際、配列の要素に`id`プロパティが含まれていると、`useFieldArray`が内部管理用に自動生成する`id`によって上書きされてしまう問題があります。
-
-これは、データベースから取得したデータなど、既に`id`を持つオブジェクトを扱う場合によく問題になります。
+react-hook-formの`useFieldArray`を使用する際、配列の要素に`id`プロパティが含まれていると、`useFieldArray`が内部管理用に自動生成する`id`によって上書きされてしまう問題に遭遇しました。
 
 ## 例えば
 
@@ -40,13 +38,9 @@ const { fields } = useFieldArray({
 
 ## なぜこの問題が起きるのか
 
-`useFieldArray`は、Reactのkey管理とフォームの状態管理を効率的に行うため、内部的に一意の`id`を各要素に付与します。この`id`は：
+`useFieldArray`は、Reactのkey管理とフォームの状態管理を効率的に行うため、内部的に一意の`id`を各要素に付与します。
 
-- 配列の要素を一意に識別するため
-- 要素の追加・削除・並び替え時に正しくトラッキングするため
-- パフォーマンスを最適化するため
-
-に使用されます。しかし、この`id`がユーザーデータの`id`と衝突してしまいます。
+しかし、この`id`がユーザーデータの`id`と衝突してしまいます。
 
 ## 解決方法
 
