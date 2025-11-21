@@ -7,6 +7,7 @@
 		"examples/*"
 	],
 	"scripts": {
+		"preview": "bunx zenn-cli preview",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write ."
