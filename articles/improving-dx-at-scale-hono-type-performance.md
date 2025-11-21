@@ -19,7 +19,7 @@ publication_name: "rit"
 
 プロジェクト初期は順調でした。HonoとDrizzle ORMを採用し、型安全性を担保しながら開発を進めました。エンドポイントを追加するたびに、zodのバリデーションとDrizzleのリレーションから自動で型が推論され、クライアント側で安全にAPIを呼び出せる環境は、まさに理想的でした。
 
-しかし、開発が進むにつれて問題が顕在化してきました
+しかし、開発が進むにつれて問題が顕在化してきました：
 
 - **エディタが重くなる**：コード補完に数秒かかるようになり、ひどい時は10秒以上待たされることも
 - **TypeScriptサーバーのクラッシュ**：頻繁にサーバーが落ち、エディタの再起動が必要に
@@ -85,7 +85,7 @@ import type { AppType } from './server'
 
 const client = hc<AppType>('http://localhost:3000')
 
-// 完全に型安全
+// 型安全
 // - zodのスキーマからリクエストの型が推論される
 // - Drizzleのクエリからレスポンスの型が推論される
 // - パスパラメータの型も推論される
@@ -184,7 +184,7 @@ const client = hc<AppType>('http://localhost:3000')
 
 ### パフォーマンス検証
 
-効果を定量的に測定するため、以下の条件で検証用プロジェクトを作成しました：
+効果を定量的に測定するため、実際のプロジェクト（100超のテーブル）を模した検証用プロジェクトを作成しました：
 
 - **200個のDrizzleテーブル定義**（dummy1~100 + children1~100）
 - **100個のエンドポイント**（/dummy1 ~ /dummy100）
@@ -232,8 +232,6 @@ const app = new Hono()
   )
   // ... dummy100まで続く
 ```
-
-完全な検証コードは[こちら](リンク)にあります。
 :::
 
 #### 測定結果
@@ -244,8 +242,6 @@ const app = new Hono()
 | 事前生成型定義（.d.ts） | 0.45秒 | **約5.3倍高速** |
 
 ※ 実測値（MacBook Pro M4, TypeScript 5.9.3, 3回計測の平均値）
-
-### 検証したアプローチ1: 型定義の事前生成
 
 #### 仕組み
 
@@ -336,19 +332,133 @@ VS Codeの設定（.vscode/settings.json）でtsgoを有効化するだけです
 
 # 課題2: テスト実行速度の低下
 
-## 問題の詳細
+型補完の改善に続き、テスト実行速度の最適化に取り組みました。
 
-テストケースが増えるにつれて、実行時間が線形に増加していきました。原因として考えられるのは：
+なお、本プロジェクトでは最初からBunのテストランナーを使用していました。もしJestを使っていたら、VitestやBunへの移行を検討したかもしれませんが、今回は特にテストランナー自体を変更する必要はありませんでした。
 
-- データベースのデータ量が累積
-- テーブルロックの競合
-- ディスクI/Oの増加
+## ボトルネックの特定
 
-特にディスクI/Oがボトルネックになっている可能性がありました。
+テストケース数に比例して実行時間が線形に増加しており、その原因を調査しました。
 
-## 解決策: トランザクションによる自動ロールバック
+各テスト後、テストデータのクリーンアップとして以下の処理を実行していました：
 
-### Drizzleでのトランザクション活用
+1. すべてのテーブルを`TRUNCATE`でクリア
+2. 次のテストに必要なシードデータを`INSERT`
+
+データ量自体は少ないものの、テーブル数が多いことで、この**クリーンアップ処理**が主なボトルネックになっていると推測されます。
+
+## TRUNCATEからDELETEへの変更
+
+最初の改善として、`TRUNCATE`から`DELETE`への変更を試みました。`TRUNCATE`はテーブル全体をリセットするため、データ量が少ない場合でもオーバーヘッドが大きくなります。一方、`DELETE`は行単位での削除となり、少量のデータに対しては効率的です。
+
+詳細な比較については、以下のスクラップにまとめています：
+https://zenn.dev/ghken/scraps/be9eb7aae9a914
+
+結果として一定の効果がありましたが、テストケースが大量になると、それでも実行時間が気になるレベルでした。
+
+## tmpfsによる高速化
+
+`DELETE`への変更で一定の改善は見られたものの、さらなる高速化を目指してtmpfsの導入を検討しました。tmpfsは、メモリ上に作成されるファイルシステムで、ディスクI/Oをメモリアクセスに置き換えることができます。
+
+### docker-composeでの設定
+
+```yaml
+services:
+  mysql-test:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: test
+    tmpfs:
+      # データディレクトリをメモリ上に配置
+      - /var/lib/mysql
+    ports:
+      - "3306:3306"
+```
+
+### tmpfsのパフォーマンス検証
+
+検証用プロジェクト（200テーブル、50テストケース）で測定しました。
+
+:::details 検証用テストコードの例（一部抜粋）
+
+```typescript
+import { test, expect, beforeEach } from 'bun:test';
+import { sql } from 'drizzle-orm';
+import { db } from './db';
+import * as schema from './schema';
+
+// 各テスト前にすべてのテーブルをクリーンアップ
+beforeEach(async () => {
+  // 外部キー制約を一時的に無効化
+  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+
+  // 200テーブルすべてをDELETEでクリア
+  for (let i = 1; i <= 100; i++) {
+    await db.execute(sql.raw(`DELETE FROM children${i}`));
+    await db.execute(sql.raw(`DELETE FROM dummy${i}`));
+  }
+
+  // 外部キー制約を再度有効化
+  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+  // シードデータを投入
+  for (let i = 1; i <= 100; i++) {
+    const tableName = `dummy${i}`;
+    const table = schema[tableName];
+    await db.insert(table).values({
+      id: `seed-${i}`,
+      name: `Seed ${i}`,
+      value: i,
+      status: 'active',
+    });
+  }
+});
+
+test('データ作成のテスト', async () => {
+  const table = schema.dummy1;
+  const [inserted] = await db.insert(table).values({
+    id: 'test-100',
+    name: 'Test User',
+    value: 100,
+    status: 'active',
+  });
+
+  expect(inserted).toBeDefined();
+});
+
+// ... 50テストケース分
+```
+:::
+
+| パターン | 実行時間 | 改善率 |
+|---------|---------|--------|
+| DELETE (通常) | 7.84秒 | - |
+| DELETE (tmpfs) | 3.00秒 | **2.6倍高速** |
+
+※ 実測値（MacBook Pro M4, 3回計測の平均値）
+
+tmpfsの導入により、ディスクI/Oがボトルネックとなっていた`DELETE`やシードデータの`INSERT`が高速化されました。
+
+しかし、`DELETE` + tmpfsの組み合わせでもテスト数が増えるとクリーンアップのオーバーヘッドは無視できず、より根本的な解決策が必要でした。
+
+## Railsのテストから学ぶ
+
+以前、Railsのプロジェクトで開発していた際、テーブル数が多くてもテストが比較的高速に実行されていました。その仕組みを調べると、**トランザクションを使ったテストの分離**が採用されていることがわかりました。
+
+Railsでは、各テストをトランザクション内で実行し、テスト終了時に自動でロールバックすることで、テーブルのクリーンアップを不要にしています。この手法であれば、テーブル数に関係なくロールバックは高速です。
+
+### TypeScriptでの実現方法
+
+同じことをTypeScriptで実現するには、ネストしたトランザクションをサポートしているORMが必要です。テストフレームワークが使うトランザクションの中で、テストコード自体がトランザクションを使う可能性があるためです。
+
+今回のプロジェクトでDrizzle ORMを採用した理由の一つがこれです。Prismaではネストしたトランザクションがファーストパーティーでサポートされていないのに対し、Drizzleはネストしたトランザクションをネイティブにサポートしています。
+
+## トランザクションによる自動ロールバック
+
+### 基本的な仕組み
+
+Drizzleのトランザクションを使うと、トランザクション内で行われた変更は、トランザクションがコミットされない限りロールバックされます。この性質を利用して、テスト内で明示的にロールバックすることで、テーブルのクリーンアップを不要にできます。
 
 ```typescript
 import { drizzle } from 'drizzle-orm/node-postgres'
@@ -378,7 +488,11 @@ test('ユーザー作成', async () => {
 })
 ```
 
-#### テストヘルパーの実装
+### テストヘルパーの実装
+
+毎回トランザクションを書くのは冗長なので、テストヘルパー関数を作成します。また、テストが失敗した場合でも確実にロールバックされるように、`finally`ブロックで明示的にエラーをthrowしてロールバックを強制します。
+
+Drizzleでは、トランザクションオブジェクトに`rollback()`メソッドがありますが、これは内部的に例外をthrowしているだけです。そのため、ここでは`rollback()`を呼ぶ代わりに直接エラーをthrowすることで、同じ効果を得ています。
 
 ```typescript
 // テストヘルパー
@@ -390,6 +504,7 @@ export async function withTestTransaction<T>(
       return await fn(tx)
     } finally {
       // 明示的にロールバック（テスト失敗時も確実に実行）
+      // tx.rollback() と同じ効果（内部的には例外をthrowしているだけ）
       throw new Error('ROLLBACK')
     }
   }).catch((e) => {
@@ -409,223 +524,115 @@ test('複雑なテスト', async () => {
 })
 ```
 
-#### ネストしたトランザクションの活用
+### トランザクションのパフォーマンス検証
 
-```typescript
-test('ネストした処理のテスト', async () => {
-  await db.transaction(async (tx1) => {
-    const user = await tx1.insert(users).values({...}).returning()
+tmpfs環境で、DELETEによるクリーンアップとトランザクションによるロールバックを比較しました。
 
-    // さらにネスト
-    await tx1.transaction(async (tx2) => {
-      const post = await tx2.insert(posts).values({
-        authorId: user.id
-      }).returning()
-
-      // 内側のトランザクションだけロールバックも可能
-    })
-  })
-})
-```
-
-#### なぜDrizzleを選んだか
-
-Drizzleはネストしたトランザクションをネイティブにサポートしています。Prismaでもサードパーティのライブラリを使えばネストしたトランザクションを扱えますが、公式サポートではないため、安定性とメンテナンスの観点から今回はDrizzleを採用しました。
-
-### パフォーマンス検証
-
-効果を定量的に測定するため、以下の条件で検証用プロジェクトを作成しました：
-
+検証条件：
 - **200個のDrizzleテーブル定義**（dummy1~100 + children1~100）
 - **50個のテストケース**
-- クリーンアップ方法: TRUNCATE vs トランザクション
-- ストレージ: 通常ディスク vs tmpfs
+- **tmpfs環境**
 
 #### 測定結果（50テストケース、Bun）
 
 | パターン | 実行時間 | 改善率 |
 |---------|---------|--------|
-| TRUNCATE (通常) | 56.81秒 | - |
-| TRUNCATE (tmpfs) | 16.21秒 | **3.5倍高速** |
-| Transaction (通常) | 0.12秒 | **473倍高速** |
-| Transaction (tmpfs) | 0.12秒 | **473倍高速** |
+| DELETE (tmpfs) | 3.00秒 | - |
+| Transaction (tmpfs) | 0.12秒 | **25倍高速** |
 
 ※ 実測値（MacBook Pro M4, 3回計測の平均値）
-※ vitestでも同様の傾向（トランザクションパターンで0.72秒）
 
-#### 主な発見
+#### 結果の考察
 
-1. **トランザクションロールバックが圧倒的に高速**
-   - TRUNCATEは200テーブル全体をクリアする必要があるため遅い
-   - トランザクションはメモリ上の変更を破棄するだけなので高速
+トランザクションロールバックが圧倒的に高速です。DELETEではテーブル数に比例してクリーンアップ時間が増加しますが、トランザクションロールバックはテーブル数に関係なく一定時間で完了します。これは、ロールバックの場合、コミット時に発生する実際のテーブルへの書き込みが不要なためです。このコミット処理のオーバーヘッドが大きく、それをスキップできることが高速化の要因となっています。
 
-2. **tmpfsの効果はTRUNCATEで顕著**
-   - TRUNCATEパターン: 約3.5倍の高速化
-   - トランザクションパターン: 効果なし（すでに十分高速）
+### Honoでの実装
 
-## tmpfsによるさらなる高速化
+実際のプロジェクトではHonoを利用しており、Honoのテストでは少し工夫が必要です。Honoは`request`メソッドでcontextを渡すことができるため、この仕組みを活用します。
 
-tmpfsは、メモリ上に作成されるファイルシステムです。ディスクI/Oではなくメモリアクセスになるため、高速化が期待できます。
+```typescript
+import { Hono } from 'hono'
+import { test, expect } from 'bun:test'
+import { eq } from 'drizzle-orm'
+import { users } from './schema'
 
-### docker-composeでの設定
+const app = new Hono()
+  .get('/users/:id', async (c) => {
+    // contextからDrizzleのトランザクションオブジェクトを取得
+    const db = c.env.db
+    const { id } = c.req.param()
 
-```yaml
-services:
-  mysql-test:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: test
-      MYSQL_DATABASE: test
-    tmpfs:
-      # データディレクトリをメモリ上に配置
-      - /var/lib/mysql
-    ports:
-      - "3306:3306"
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, id)
+    })
+
+    return c.json(user)
+  })
+
+// テストコード
+test('ユーザー取得', async () => {
+  await db.transaction(async (tx) => {
+    // テストデータを作成
+    await tx.insert(users).values({
+      id: 'test-1',
+      name: 'Test User'
+    })
+
+    // トランザクションオブジェクトをcontextに渡す
+    const res = await app.request('/users/test-1', {}, { db: tx })
+    const data = await res.json()
+
+    expect(data.name).toBe('Test User')
+
+    // トランザクション終了時に自動でロールバック
+  })
+})
 ```
 
-### 効果
-
-上記の測定結果から、tmpfsの効果は**クリーンアップ手法に依存**することがわかりました：
-
-- **TRUNCATEパターン**: 約3.5倍の高速化
-- **トランザクションパターン**: 効果なし（すでに十分高速）
-
-TRUNCATEはtmpfs環境で3.5倍高速化しましたが、トランザクションパターンではストレージの影響はほぼ見られませんでした。この結果から、TRUNCATEは何らかのストレージ操作がボトルネックになっている可能性があります。
-
-### 注意点
-
-tmpfsを使う際の注意点：
-
-1. **メモリ容量に注意**
-   - データベースのサイズがメモリに収まる必要がある
-   - テスト用途なら通常問題ない
-
-2. **データは揮発する**
-   - コンテナ停止時にデータは消える
-   - テスト用途なので問題ない
-
-3. **本番環境では使わない**
-   - あくまでテスト用の最適化
+この実装により、リクエスト処理内で使用されるデータベース操作もすべてテスト用のトランザクション内で実行され、テスト完了時に自動でロールバックされます。
 
 ## 採用した解決策
 
 測定結果から、以下の構成を採用しました：
 
 - **テストランナー**: Bun
-- **クリーンアップ手法**: トランザクションロールバック（TRUNCATEより473倍高速）
-- **tmpfs**: 不要（トランザクションで十分高速）
+- **クリーンアップ手法**: トランザクションロールバック（DELETEより25倍高速）
+- **データベース環境**: tmpfs
 
-```typescript
-import { test, expect } from 'bun:test';
-import { db } from './db';
-import { DrizzleError } from 'drizzle-orm';
-
-function withTransaction(fn) {
-  return async () => {
-    let testFailure;
-    try {
-      await db.transaction(async (tx) => {
-        try {
-          await fn(tx);
-        } catch (e) {
-          testFailure = e;
-        } finally {
-          tx.rollback();
-        }
-      });
-    } catch (e) {
-      if (testFailure) throw testFailure;
-      if (e instanceof DrizzleError) return;
-      throw e;
-    }
-  };
-}
-
-test('ユーザー作成', withTransaction(async (tx) => {
-  const user = await tx.insert(users).values({
-    name: 'test'
-  }).returning();
-
-  expect(user.name).toBe('test');
-  // トランザクション終了時に自動ロールバック
-}));
-```
-
-### 最終的な効果
-
-50テストケースの実行時間が**56.81秒 → 0.12秒**に短縮され、**約473倍の高速化**を達成しました。
+この構成により、50テストケースの実行時間を**0.12秒**まで短縮できました。
 
 # その他の検討した施策
 
 ## 並列実行
 
-TBD
-
-<!-- Bunのテストランナーは並列実行をサポートしています。
-
-```bash
-bun test --concurrent
-```
-
-ただし、データベースを使うテストでは：
-
-- トランザクション分離レベルの問題
-- テストデータの競合
-
-が発生する可能性があるため、慎重に検討する必要があります。
-
-Drizzleのトランザクション + tmpfsの組み合わせなら、並列実行しても問題ないケースが多いです。 -->
-
-## テストの選択的実行
-
-```bash
-# 特定のファイルだけ実行
-bun test src/users.test.ts
-
-# パターンマッチ
-bun test --filter="user"
-```
-
-開発中は関連するテストだけ実行し、CIでは全件実行する運用も効果的です。
+Bunのテストランナーは最近並列実行をサポートするようになりました。並列で実行できればさらなる高速化が期待できるため、今後試してみたいと考えています。
 
 # まとめ
 
 ## 型補完の遅延対策
 
-- ルート分割やtsconfig最適化は限定的
-- **tsgo** による根本的な解決
-- エンドポイント数百規模でも快適な開発が可能に
+型推論の複雑さによるエディタの補完遅延に対して、**tsgo**（TypeScriptコンパイラのGoによる再実装）を導入しました。約2.6倍の高速化を達成し、アプリケーションの規模が大きくなっても快適な開発が可能になりました。
 
 ## テスト速度の最適化
 
-- **Bunテストランナー**の採用
-- **Drizzleのトランザクションロールバック**で自動クリーンアップ（TRUNCATEより473倍高速）
-- **tmpfs**の効果は限定的（トランザクションですでに十分高速）
-- 最終的に473倍の高速化を達成
+テストのクリーンアップ処理のボトルネックに対して、段階的な改善を行いました：
 
-## 学んだこと
+1. **TRUNCATEからDELETEへ変更**：データ量が少ない場合に効率的
+2. **tmpfsの導入**：DELETEとシードデータのINSERTが2.6倍高速化（7.84秒→3.00秒）
+3. **トランザクションロールバック**：コミット処理が不要になり25倍高速化（3.00秒→0.12秒）
 
-1. **DXの悪化は早めに対処する**
-   - 後回しにすると改善コストが増大
-   - チーム全体の生産性に影響
-
-2. **複数の最適化を組み合わせる**
-   - 1つの施策では限界がある
-   - 相乗効果を狙う
-
-3. **ツール選択の重要性**
-   - 問題に適したツールを選ぶ
-   - 移行コストを恐れずに検討する
+最終的に、Drizzleのネストしたトランザクションサポートを活用し、Honoのテストでも適用できる形で実装しました。
 
 ## 今後の展望
 
-- tsgoのさらなる活用
-- テストの並列実行の最適化
+- Bunのテストランナーの並列実行機能を試す
 - 他のボトルネックの特定と改善
 
 # 参考リンク
 
 - [Hono](https://hono.dev/)
 - [Drizzle ORM](https://orm.drizzle.team/)
+- [tsgo (@typescript/native-preview)](https://github.com/microsoft/TypeScript/tree/native-preview)
+- [TRUNCATE vs DELETE の比較（スクラップ）](https://zenn.dev/ghken/scraps/be9eb7aae9a914)
 - [Docker tmpfs](https://docs.docker.com/storage/tmpfs/)
 - [Bun Testing](https://bun.sh/docs/cli/test)

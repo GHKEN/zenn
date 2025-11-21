@@ -8,6 +8,7 @@
 		"generate:schema": "bun run scripts/generate-schema.ts",
 		"db:push": "drizzle-kit push",
 		"test:bun-truncate": "bun test tests/bun-truncate.test.ts",
+		"test:bun-delete": "bun test tests/bun-delete.test.ts",
 		"test:bun-transaction": "bun test tests/bun-transaction.test.ts",
 		"test:vitest-truncate": "vitest run tests/vitest-truncate.test.ts",
 		"test:vitest-transaction": "vitest run tests/vitest-transaction.test.ts",
