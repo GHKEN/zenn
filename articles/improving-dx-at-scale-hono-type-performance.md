@@ -3,7 +3,7 @@ title: "アプリケーションの拡大に伴う開発者体験の悪化をな
 emoji: "⚡"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["hono", "typescript", "drizzle", "testing", "dx"]
-published: false
+published: true
 publication_name: "rit"
 ---
 
@@ -625,7 +625,7 @@ Bunのテストランナーは最近並列実行をサポートするように�
 ## 今後の展望
 
 - Bunのテストランナーの並列実行機能を試す
-- 他のボトルネックの特定と改善
+- DBの設定のチューニング（ログ周りの設定変更で早くなる気がする）
 
 # 参考リンク
 
